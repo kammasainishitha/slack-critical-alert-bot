@@ -1,0 +1,32 @@
+# Channels to watch (Slack channel IDs, e.g. C0123456789 -- not names)
+watched_channels:
+  - "C0000000000"
+
+# A message is considered urgent/critical if its text matches any of these
+# (case-insensitive), OR if a "Priority" field in its blocks/attachments
+# matches priority_field_values below.
+keywords:
+  - "urgent"
+  - "critical"
+  - "p0"
+  - "p1"
+  - "sev1"
+  - "sev2"
+
+priority_field_values:
+  - "urgent"
+  - "critical"
+
+# Static on-call mapping: everyone listed here is called for every
+# urgent/critical alert. To route by team instead, add a "match_keywords"
+# list to an entry -- it will only be called if one of those keywords
+# also appears in the message text.
+on_call:
+  - name: "Alice"
+    phone: "+15550100001"
+  - name: "Bob"
+    phone: "+15550100002"
+    match_keywords: ["billing", "payments"]
+
+# Seconds to wait between placing calls to different people
+call_stagger_seconds: 5
