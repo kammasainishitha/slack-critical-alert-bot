@@ -5,17 +5,35 @@ watched_channels:
 # A message is considered urgent/critical if its text matches any of these
 # (case-insensitive), OR if a "Priority" field in its blocks/attachments
 # matches priority_field_values below.
+#
+# NOTE: with the Workflow Builder + repository_dispatch setup (see
+# README), Slack itself does this filtering -- copy this same list into
+# the Slack workflow's trigger keyword condition. This list is used
+# directly only by the fallback Slack API polling path (app/poll.py),
+# currently disabled.
 keywords:
   - "urgent"
   - "critical"
   - "p0"
   - "p1"
   - "sev1"
-  - "sev2"
+  - "sev-1"
+  - "severity 1"
+  - "emergency"
+  - "immediate action"
+  - "immediate action required"
+  - "asap"
+  - "escalate"
+  - "escalation"
+  - "production down"
+  - "prod down"
 
 priority_field_values:
   - "urgent"
   - "critical"
+  - "p0"
+  - "p1"
+  - "emergency"
 
 # Static on-call mapping: everyone listed here is called for every
 # urgent/critical alert. To route by team instead, add a "match_keywords"
