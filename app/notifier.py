@@ -30,7 +30,7 @@ def _recipients_for(alert: Alert):
 
 def _build_twiml(alert: Alert) -> str:
     message = (
-        f"Alert. A {alert.matched_keyword} priority ticket was just created in Slack. "
+        f"Alert. An urgent ticket was just created in Slack. "
         f"Message text: {alert.text}. Please check Slack immediately."
     )
     return f'<Response><Say voice="alice" loop="2">{escape(message)}</Say></Response>'

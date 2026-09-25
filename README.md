@@ -1,104 +1,121 @@
 # slack-critical-alert-bot
 
-Watches a Slack channel for urgent/critical tickets and phones a static list
-of on-call people via Twilio when one appears. Runs for free as a GitHub
-Actions scheduled workflow — no server, no laptop needing to stay on.
+Watches a Slack channel for urgent/critical messages and phones a static
+list of on-call people via Twilio when one appears — no Slack app, no bot
+token, no OAuth install required.
 
-## How it works
+## How it works (no Slack app needed)
 
-Every 5 minutes, `.github/workflows/poll.yml` runs `python -m app.poll`,
-which:
+Instead of a bot reading the channel (which needs a Slack app + API
+token, often gated behind admin/org approval), this uses **Slack's
+built-in Workflow Builder**:
 
-1. For each channel in `config.yaml`, fetches messages posted since the
-   last run (via Slack's `conversations.history` Web API).
-2. Flags a message as urgent/critical if its text contains a configured
-   keyword (`urgent`, `critical`, `p0`, `sev1`, ...), or if it carries a
-   `Priority` field (block/attachment) matching `priority_field_values`.
-   This covers both plain human messages and structured notifications from
-   a ticketing bot (Jira, DevRev, etc.).
-3. For each match, calls everyone in `on_call` (in `config.yaml`) via
-   Twilio's Voice API with a `<Say>` TwiML message reading out the alert,
-   staggered by `call_stagger_seconds`.
-4. Commits `state/state.json` back to the repo — this tracks the
-   last-seen timestamp per channel (so old messages are never reprocessed)
-   and a rolling window of processed message IDs (dedupe) and recent call
-   attempts (audit log).
+1. A Slack workflow (native Slack feature, not an installed app) triggers
+   whenever a message containing a keyword (`urgent`, `critical`, `p0`,
+   etc.) is posted in the watched channel.
+2. That workflow's step sends an HTTP request straight to GitHub's API,
+   firing a `repository_dispatch` event on this repo with the message
+   text as payload — no polling, no Slack token, real-time.
+3. GitHub Actions (`.github/workflows/alert.yml`) receives that event and
+   runs `python -m app.dispatch`, which calls everyone in `on_call` (in
+   `config.yaml`) via Twilio's Voice API with a `<Say>` TwiML message
+   reading out the alert, staggered by `call_stagger_seconds`.
+4. Each call attempt is appended to `state/state.json` (committed back to
+   the repo) as an audit log.
 
-The first run for a newly-added channel just records the current time as
-the watermark — it won't dial anyone for pre-existing history.
-
-## Why polling, not a live listener
-
-A real-time listener needs a persistent connection, which needs an
-always-on server (costs money). Running this for free means something
-that wakes up, checks, and exits — hence a 5-minute-interval GitHub
-Actions job instead of a live Slack Socket Mode process. Worst case
-latency from ticket to phone call is ~5-10 minutes (occasionally more if
-GitHub's scheduler is under load) — not instant, but zero-cost.
-
-**This repo needs to stay public** for GitHub Actions minutes to be
-unlimited/free. On a private repo, a 5-minute interval would burn through
-the free 2,000 min/month tier; you'd need to drop to ~every 15 minutes to
-stay within it.
+Filtering on "is this urgent/critical" happens entirely inside the Slack
+workflow's trigger config (you choose the keywords there) — the app code
+trusts whatever Slack sends it.
 
 ## Setup
 
-### 1. Slack app
+### 1. Build the Slack workflow
 
-Create a Slack app at api.slack.com/apps with:
-- Bot token scopes: `channels:history` (public channels) and/or
-  `groups:history` (private channels)
-- Install the app to your workspace, invite the bot to the channel(s) you
-  want to watch
+In Slack: **Tools → Workflow Builder** (or the "+" next to the message
+box → **Workflow**) → **Create Workflow**.
 
-You only need the bot token (`xoxb-...`) — no Socket Mode / app-level
-token / signing secret required for polling.
+- **Trigger**: "From a message in Slack" → pick the channel to watch →
+  set it to fire when the message **contains** any of your keywords
+  (e.g. `urgent`, `critical`, `p0`, `p1`, `sev1`, `sev2`)
+- **Step**: add **Send a webhook** (a built-in Workflow Builder step —
+  this requires a Slack plan that supports it; Pro and above typically
+  do, check if you don't see it as an option)
+  - URL: `https://api.github.com/repos/kammasainishitha/slack-critical-alert-bot/dispatches`
+  - Method: `POST`
+  - Headers:
+    - `Accept: application/vnd.github+json`
+    - `Authorization: Bearer <your GitHub token — see step 2>`
+  - Body (JSON), using the message-text variable Workflow Builder gives
+    you in place of `{{message text}}`:
+    ```json
+    {
+      "event_type": "slack_urgent_alert",
+      "client_payload": {
+        "text": "{{message text}}",
+        "channel": "{{channel name}}"
+      }
+    }
+    ```
+- **Publish** the workflow
 
-### 2. Twilio
+If your workspace restricts who can create/publish workflows, that's a
+much smaller ask than requesting a new Slack app be installed — worth
+checking with whoever manages your Slack workspace if you hit a
+permission wall here.
+
+### 2. Create a GitHub token for Slack to call
+
+Go to **github.com/settings/tokens** → generate a token:
+- Prefer a **fine-grained token** scoped to only this one repo, with
+  "Contents" permission set to read/write
+- If that 403s when Slack calls it, fall back to a **classic token**
+  with the `repo` scope
+
+This token goes directly into the Workflow Builder webhook step's
+`Authorization` header above — it never touches GitHub Secrets, since
+Slack (not GitHub Actions) is the one making the call.
+
+### 3. Twilio
 
 Get `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and a `TWILIO_FROM_NUMBER`
-capable of making outbound voice calls, from console.twilio.com.
+from console.twilio.com, then add them as GitHub repo secrets at
+**Settings → Secrets and variables → Actions**:
+`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`.
 
-### 3. GitHub repo secrets
+Trial Twilio accounts can only call numbers verified under Console →
+Phone Numbers → **Verified Caller IDs**.
 
-In the repo's Settings > Secrets and variables > Actions, add:
-`SLACK_BOT_TOKEN`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
-`TWILIO_FROM_NUMBER`.
+### 4. Set the on-call list
 
-### 4. Configure `config.yaml`
+Edit `on_call` in `config.yaml` — name + phone (E.164 format, e.g.
+`+919876543210`). Add `match_keywords` to an entry to only call that
+person when those words also appear in the message.
 
-- `watched_channels`: Slack **channel IDs** (not names) to monitor
-- `keywords` / `priority_field_values`: what counts as urgent/critical
-- `on_call`: static list of `{name, phone}` to call. Add `match_keywords`
-  to an entry to only call that person when those keywords also appear.
+### 5. Test
 
-### 5. That's it
+Post a message with one of your trigger keywords in the Slack channel.
+Check the repo's **Actions** tab — a `slack-workflow-alert` run should
+appear within seconds. If it doesn't appear at all, the problem is on the
+Slack workflow/webhook side (check Workflow Builder's run history in
+Slack); if it appears but fails, check the run's logs.
 
-The workflow runs automatically every 5 minutes once pushed. To trigger a
-run manually (e.g. to test), go to the Actions tab and run
-"poll-slack-alerts" via "Run workflow", or:
+## Older approach: Slack API polling (kept for reference, disabled)
 
-```bash
-gh workflow run poll.yml
-```
-
-## Local testing
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env   # fill in real or dummy credentials
-.venv/bin/python -m app.poll
-```
+`app/poll.py` and `.github/workflows/poll.yml` implement an alternative
+that polls Slack's `conversations.history` API every 5 minutes — this
+needs a Slack bot token (i.e. an actual Slack app), which is why the
+Workflow Builder approach above is the primary path. That workflow is
+currently disabled. Ignore it unless Slack app access becomes available
+later and you'd prefer true (5-min-interval) polling over the
+webhook-trigger model.
 
 ## Known limitations
 
 - On-call mapping is static (edited in `config.yaml`), not a rotation.
-- No retry/escalation if a call goes unanswered — Twilio status callbacks
-  would be needed to detect no-answer and call the next person.
-- ~5-10 minute latency, not real-time. For true real-time alerting you'd
-  need an always-on host running a Slack Socket Mode process instead —
-  that costs a few dollars a month but removes the delay.
-- If more than 200 messages land in a channel within one 5-minute window,
-  only the most recent 200 are fetched (Slack API pagination isn't
-  implemented) — fine for normal use, not for very high-traffic channels.
+- No retry/escalation if a call goes unanswered.
+- Relies on Slack Workflow Builder's keyword-match trigger being
+  available on your plan, and on whoever administers your workspace
+  allowing workflow creation/publishing.
+- The GitHub token in the webhook header is visible to anyone who can
+  edit that Slack workflow — scope it to this repo only and rotate it
+  periodically.

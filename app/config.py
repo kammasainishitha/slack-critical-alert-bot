@@ -11,7 +11,9 @@ ROOT = Path(__file__).resolve().parent.parent
 with open(ROOT / "config.yaml") as f:
     CONFIG = yaml.safe_load(f)
 
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
+# Only required by the Slack-API polling path (app/poll.py). The
+# Workflow-Builder dispatch path (app/dispatch.py) doesn't need it.
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
